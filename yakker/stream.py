@@ -1,8 +1,7 @@
 from typing import Literal, Any
 
 from .conversation import Conversation
-from .request import build_request
-from .client import send_request
+from .request import build_request, send_request
 from .parser import parse_sse_line
 
 def parse_events(response_text: str) -> list[dict]:
@@ -31,7 +30,6 @@ def extract_text(events: list[dict]) -> str:
     text_parts = []
 
     for event in events:
-        print(event)
         if event.get('type') == 'TEXT_MESSAGE_CONTENT':
             delta = event.get('delta', '')
             text_parts.append(delta)
@@ -62,7 +60,6 @@ def send_message_simple(url: str, content: str, role: Literal["user", "assistant
 
     from yakker.message import Message
     from yakker.request import build_request
-    from yakker.client import send_request
 
     msg = Message(role=role, content=content)
     request_data = build_request([msg], state=state)

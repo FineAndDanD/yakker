@@ -3,7 +3,6 @@ import uuid
 from typing import Any
 
 import httpx
-import requests
 
 from .message import Message
 

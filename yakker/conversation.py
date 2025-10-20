@@ -19,8 +19,8 @@ class Conversation:
         :param new_state: Any dictionary
         :return: Nothing
         """
-        for key, value in new_state:
-            setattr(self.state, key, value)
+        for key, value in new_state.items():
+            self.state[key] = value
 
     def add_message(self, content: str, role: Literal["user", "assistant", "system", "tool"] = "user", tool_calls: list[dict] = None, tool_call_id: str = None) -> Message:
         """
@@ -40,7 +40,7 @@ class Conversation:
         """
         return self.messages
 
-    def clear_message(self) -> None:
+    def clear_messages(self) -> None:
         """
         Clear all messages from the conversation
         :return: Nothing
@@ -69,7 +69,7 @@ class Conversation:
         :param key: The key representing the item to remove
         :return: The updated custom state object
         """
-        self.state.pop(key)
+        self.state.pop(key, None)
         return self.state
 
     def clear_state(self):

@@ -162,8 +162,9 @@ class Client:
                     logger.error(f"An error occurred when decoding tool handler arguments: {error}")
                     result = json.dumps({"error": str(error)})
 
-                # The content for the message must always be a string
-                self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
+                if result is not None:
+                    # The content for the message must always be a string
+                    self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
 
             logger.info("Calling the LLM again with follow up request and tool response information")
             # Call the LLM a second time with the tool call results
