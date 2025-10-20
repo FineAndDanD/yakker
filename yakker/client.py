@@ -144,11 +144,11 @@ class Client:
 
             logger.debug(f"Received tool calls: {tool_call.items()}")
             for key, value in tool_call.items():
-                result = str(False)
+                result = None
                 try:
                     args = json.loads(value['args'])
 
-                    if self._approval_handler and value['name'] == self._approval_handler.__name__:
+                    if value['name'] == self._approval_handler.__name__:
                         logger.info("Executing requested tool calls")
                         if self._approval_is_async:
                             result = await self._approval_handler(**args)

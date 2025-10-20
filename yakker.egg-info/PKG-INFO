@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: yakker
-Version: 0.1.0
-Summary: A Python client for the AG-UI protocol
-Requires-Python: >=3.10
-Requires-Dist: httpx>=0.27.0
-Requires-Dist: requests>=0.12.0
