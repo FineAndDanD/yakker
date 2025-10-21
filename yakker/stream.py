@@ -49,7 +49,7 @@ def process_response(events: list[dict], current_state: dict[str, Any]) -> tuple
 
     return ''.join(text_parts), snapshot
 
-async def process_event_stream(url: str, request_data: dict, tool_call: dict):
+async def process_event_stream(url: str, request_data: dict, tool_call: dict, state: dict):
     async for line in send_request_stream(url, request_data, timeout=60):
         event = parse_sse_line(line)
         if not event:
@@ -59,7 +59,7 @@ async def process_event_stream(url: str, request_data: dict, tool_call: dict):
             chunk = event.get('delta', '')
             yield chunk
         elif event.get('type') == 'STATE_SNAPSHOT':
-            new_state = event.get('snapshot', {})
+            state.update(event.get('snapshot', {}))
         # Track tool calls
         elif event.get('type') == 'TOOL_CALL_START':
             tool_call_id = event.get('toolCallId')

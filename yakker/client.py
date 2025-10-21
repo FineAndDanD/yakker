@@ -91,14 +91,13 @@ class Client:
 
         while not execution_complete:
             full_response_text = ""
-            new_state = {}
             tool_call = {}
 
             request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state(),
                                          tools=tools)
 
             logger.debug("Executing response stream")
-            async for event_text in process_event_stream(url, request_data, tool_call):
+            async for event_text in process_event_stream(url, request_data, tool_call, state=self.conversation.get_state()):
                 full_response_text += event_text
                 yield event_text
 
@@ -119,9 +118,6 @@ class Client:
                 self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
             else:
                 self.conversation.add_message(role="assistant", content=full_response_text)
-
-            # Update state between requests just in case the LLM decided to change something before the tools get executed
-            self.conversation.state.update(new_state)
 
             if tool_call and self._approval_handler:
                 import json
@@ -154,7 +150,6 @@ class Client:
                     f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
                     f"Register one with @client.approval_handler"
                 )
+                execution_complete = True
             else:
-                # Update the final state after everything is done
-                self.conversation.state.update(new_state)
                 execution_complete = True
