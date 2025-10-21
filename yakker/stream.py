@@ -1,5 +1,7 @@
 from typing import Literal, Any
 
+import httpx
+
 from .conversation import Conversation
 from .request import build_request, send_request, send_request_stream
 from .parser import parse_sse_line
@@ -49,8 +51,8 @@ def process_response(events: list[dict], current_state: dict[str, Any]) -> tuple
 
     return ''.join(text_parts), snapshot
 
-async def process_event_stream(url: str, request_data: dict, tool_call: dict, state: dict):
-    async for line in send_request_stream(url, request_data, timeout=60):
+async def process_event_stream(http_client: httpx.AsyncClient, url: str, request_data: dict, tool_call: dict, state: dict):
+    async for line in send_request_stream(http_client=http_client, url=url, request_data=request_data, timeout=60):
         event = parse_sse_line(line)
         if not event:
             continue

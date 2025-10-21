@@ -3,9 +3,10 @@ import inspect
 import logging
 from typing import Literal, Callable, Optional, AsyncGenerator
 
+import httpx
+
 from .tool import build_tool
-from .parser import parse_sse_line
-from .request import build_request, send_request, send_request_stream
+from .request import build_request, send_request
 from .stream import parse_events, process_response, process_event_stream
 from .conversation import Conversation
 
@@ -80,76 +81,90 @@ class Client:
 
         logger.info(f"Sending message to {url}")
         # Can build other tools later
-        tools = []
-        if self._approval_handler:
-            tool = build_tool(self._approval_handler)
-            if tool:
-                tools.append(tool)
+        async with httpx.AsyncClient() as http_client:
+            tools = []
+            if self._approval_handler:
+                tool = build_tool(self._approval_handler)
+                if tool:
+                    tools.append(tool)
 
-        self.conversation.add_message(role=role, content=content)
-        execution_complete = False
+            self.conversation.add_message(role=role, content=content)
+            execution_complete = False
 
-        while not execution_complete:
-            full_response_text = ""
-            tool_call = {}
+            while not execution_complete:
+                full_response_text = ""
+                tool_call = {}
 
-            request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state(),
-                                         tools=tools)
+                request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state(),
+                                             tools=tools)
 
-            logger.debug("Executing response stream")
-            async for event_text in process_event_stream(url, request_data, tool_call, state=self.conversation.get_state()):
-                full_response_text += event_text
-                yield event_text
+                logger.debug("Executing response stream")
+                # NOTE: State is updated in-place in this function, so no passing of state is necessary
+                try:
+                    async for event_text in process_event_stream(http_client=http_client, url=url, request_data=request_data, tool_call=tool_call, state=self.conversation.get_state()):
+                        full_response_text += event_text
+                        yield event_text
+                except httpx.RemoteProtocolError as error:
+                    logger.error(f"Stream closed unexpectedly. Error: {error}")
 
-            tool_calls = []
+                    # Send back partial response in messages
+                    if full_response_text:
+                        self.conversation.add_message(content=full_response_text, role="assistant")
+                        execution_complete = True
+                        continue
+                except Exception as error:
+                    logger.error(f"An unexpected error occurred. Error: {error}")
+                    raise
 
-            if tool_call:
-                for key, value in tool_call.items():
-                    tool_calls.append({
-                        "id": key,
-                        "type": "function",
-                        "function": {
-                            "name": value['name'],
-                            "arguments": value['args']
-                        }
-                    })
+                tool_calls = []
 
-            if tool_calls:
-                self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
-            else:
-                self.conversation.add_message(role="assistant", content=full_response_text)
+                if tool_call:
+                    for key, value in tool_call.items():
+                        tool_calls.append({
+                            "id": key,
+                            "type": "function",
+                            "function": {
+                                "name": value['name'],
+                                "arguments": value['args']
+                            }
+                        })
 
-            if tool_call and self._approval_handler:
-                import json
+                if tool_calls:
+                    self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
+                else:
+                    self.conversation.add_message(role="assistant", content=full_response_text)
 
-                logger.debug(f"Received tool calls: {tool_call.items()}")
-                for key, value in tool_call.items():
-                    result = None
-                    try:
-                        args = json.loads(value['args'])
+                if tool_call and self._approval_handler:
+                    import json
 
-                        if value['name'] == self._approval_handler.__name__:
-                            logger.info("Executing requested tool calls")
-                            if self._approval_is_async:
-                                result = await self._approval_handler(**args)
-                            else:
-                                result = self._approval_handler(**args)
+                    logger.debug(f"Received tool calls: {tool_call.items()}")
+                    for key, value in tool_call.items():
+                        result = None
+                        try:
+                            args = json.loads(value['args'])
 
-                    except json.JSONDecodeError as error:
-                        logger.error(f"Failed to decode JSON when decoding tool handler arguments: {error}")
-                        result = json.dumps({"error": str(error)})
-                    except Exception as error:
-                        logger.error(f"An error occurred when decoding tool handler arguments: {error}")
-                        result = json.dumps({"error": str(error)})
+                            if value['name'] == self._approval_handler.__name__:
+                                logger.info("Executing requested tool calls")
+                                if self._approval_is_async:
+                                    result = await self._approval_handler(**args)
+                                else:
+                                    result = self._approval_handler(**args)
 
-                    if result is not None:
-                        # The content for the message must always be a string
-                        self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
-            elif tool_call and not self._approval_handler:
-                logger.warning(
-                    f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
-                    f"Register one with @client.approval_handler"
-                )
-                execution_complete = True
-            else:
-                execution_complete = True
+                        except json.JSONDecodeError as error:
+                            logger.error(f"Failed to decode JSON when decoding tool handler arguments: {error}")
+                            result = json.dumps({"error": str(error)})
+                        except Exception as error:
+                            logger.error(f"An error occurred when decoding tool handler arguments: {error}")
+                            result = json.dumps({"error": str(error)})
+
+                        if result is not None:
+                            # The content for the message must always be a string
+                            self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
+                elif tool_call and not self._approval_handler:
+                    logger.warning(
+                        f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
+                        f"Register one with @client.approval_handler"
+                    )
+                    execution_complete = True
+                else:
+                    execution_complete = True

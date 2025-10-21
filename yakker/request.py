@@ -57,25 +57,25 @@ def send_request(url: str, request_data: dict, timeout: float = 30.0) -> httpx.R
 
     return response
 
-async def send_request_stream(url: str, request_data: dict, timeout: float = 30.0):
+async def send_request_stream(http_client: httpx.AsyncClient, url: str, request_data: dict, timeout: float = 30.0):
     """
     Sends a request to an AG-UI server and streams back the response async
+    :param http_client:
     :param url: The AG-UI server URL
     :param request_data: The data to send to the server (from build_request). Follows the request pattern for the AG-UI protocol
     :param timeout: Request will fail after this timeout threshold (default 30 seconds)
     :return: The HTTP response object
     """
-    async with httpx.AsyncClient() as client:
-        async with client.stream(
-            'POST',
-            url,
-            json=request_data,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream"
-            },
-            timeout=timeout,
-        ) as response:
-            async for line in response.aiter_lines():
-                if line:
-                    yield line
+    async with http_client.stream(
+        'POST',
+        url,
+        json=request_data,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream"
+        },
+        timeout=timeout,
+    ) as response:
+        async for line in response.aiter_lines():
+            if line:
+                yield line
