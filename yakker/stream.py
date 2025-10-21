@@ -1,7 +1,7 @@
 from typing import Literal, Any
 
 from .conversation import Conversation
-from .request import build_request, send_request
+from .request import build_request, send_request, send_request_stream
 from .parser import parse_sse_line
 
 def parse_events(response_text: str) -> list[dict]:
@@ -48,6 +48,33 @@ def process_response(events: list[dict], current_state: dict[str, Any]) -> tuple
             snapshot = event.get('snapshot', {})
 
     return ''.join(text_parts), snapshot
+
+async def process_event_stream(url: str, request_data: dict, tool_call: dict):
+    async for line in send_request_stream(url, request_data, timeout=60):
+        event = parse_sse_line(line)
+        if not event:
+            continue
+
+        if event.get('type') == 'TEXT_MESSAGE_CONTENT':
+            chunk = event.get('delta', '')
+            yield chunk
+        elif event.get('type') == 'STATE_SNAPSHOT':
+            new_state = event.get('snapshot', {})
+        # Track tool calls
+        elif event.get('type') == 'TOOL_CALL_START':
+            tool_call_id = event.get('toolCallId')
+            tool_call[tool_call_id] = {
+                "name": event.get('toolCallName'),
+                "args": ""
+            }
+        elif event.get('type') == 'TOOL_CALL_ARGS':
+            tool_call_id = event.get('toolCallId')
+            delta = event.get('delta')
+            tool_call[tool_call_id]['args'] += delta
+        elif event.get('type') == 'TOOL_CALL_END':
+            tool_call_id = event.get('toolCallId')
+            tool_call[tool_call_id]['complete'] = True
+
 
 def send_message_simple(url: str, content: str, role: Literal["user", "assistant", "system", "tool"] = "user", state: dict = {}) -> str:
     """

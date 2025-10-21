@@ -6,7 +6,7 @@ from typing import Literal, Callable, Optional, AsyncGenerator
 from .tool import build_tool
 from .parser import parse_sse_line
 from .request import build_request, send_request, send_request_stream
-from .stream import parse_events, process_response
+from .stream import parse_events, process_response, process_event_stream
 from .conversation import Conversation
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ class Client:
         """
         if not url:
             url = self.url
+
+        # TODO: Update this to accept tools
         self.conversation.add_message(role=role, content=content)
         request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state())
         response = send_request(url, request_data, timeout=60)
@@ -85,110 +87,74 @@ class Client:
                 tools.append(tool)
 
         self.conversation.add_message(role=role, content=content)
-        request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state(), tools=tools)
-        full_response_text = ""
-        new_state = {}
+        execution_complete = False
 
-        tool_call = {}
+        while not execution_complete:
+            full_response_text = ""
+            new_state = {}
+            tool_call = {}
 
-        logger.debug("Executing response stream")
-        async for line in send_request_stream(url, request_data, timeout=60):
-            event = parse_sse_line(line)
-            if not event:
-                continue
-
-            if event.get('type') == 'TEXT_MESSAGE_CONTENT':
-                chunk = event.get('delta', '')
-                full_response_text += chunk
-                yield chunk
-            elif event.get('type') == 'STATE_SNAPSHOT':
-                new_state = event.get('snapshot', {})
-            # Track tool calls
-            elif event.get('type') == 'TOOL_CALL_START':
-                tool_call_id = event.get('toolCallId')
-                tool_call[tool_call_id] = {
-                    "name": event.get('toolCallName'),
-                    "args": ""
-                }
-            elif event.get('type') == 'TOOL_CALL_ARGS':
-                tool_call_id = event.get('toolCallId')
-                delta = event.get('delta')
-                tool_call[tool_call_id]['args'] += delta
-            elif event.get('type') == 'TOOL_CALL_END':
-                tool_call_id = event.get('toolCallId')
-                tool_call[tool_call_id]['complete'] = True
-
-        tool_calls = []
-
-        if tool_call:
-            for key, value in tool_call.items():
-                tool_calls.append({
-                    "id": key,
-                    "type": "function",
-                    "function": {
-                        "name": value['name'],
-                        "arguments": value['args']
-                    }
-                })
-
-        if tool_calls:
-            self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
-        else:
-            self.conversation.add_message(role="assistant", content=full_response_text)
-
-        # Update state between requests just in case the LLM decided to change something before the tools get executed
-        self.conversation.state.update(new_state)
-
-        if tool_call and self._approval_handler:
-            import json
-
-            logger.debug(f"Received tool calls: {tool_call.items()}")
-            for key, value in tool_call.items():
-                result = None
-                try:
-                    args = json.loads(value['args'])
-
-                    if value['name'] == self._approval_handler.__name__:
-                        logger.info("Executing requested tool calls")
-                        if self._approval_is_async:
-                            result = await self._approval_handler(**args)
-                        else:
-                            result = self._approval_handler(**args)
-
-                except json.JSONDecodeError as error:
-                    logger.error(f"Failed to decode JSON when decoding tool handler arguments: {error}")
-                    result = json.dumps({"error": str(error)})
-                except Exception as error:
-                    logger.error(f"An error occurred when decoding tool handler arguments: {error}")
-                    result = json.dumps({"error": str(error)})
-
-                if result is not None:
-                    # The content for the message must always be a string
-                    self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
-
-            logger.info("Calling the LLM again with follow up request and tool response information")
-            # Call the LLM a second time with the tool call results
-            # TODO: Enhance this to allow for multi-step execution. It'd be dope to handle all this at the library level so the consumer can just use it
             request_data = build_request(messages=self.conversation.get_messages(), state=self.conversation.get_state(),
                                          tools=tools)
-            full_followup_response = ""
-            async for line in send_request_stream(url, request_data, timeout=60):
-                event = parse_sse_line(line)
-                if not event:
-                    continue
 
-                if event.get('type') == 'TEXT_MESSAGE_CONTENT':
-                    chunk = event.get('delta', '')
-                    full_followup_response += chunk
-                    yield chunk
-                elif event.get('type') == 'STATE_SNAPSHOT':
-                    new_state = event.get('snapshot', {})
+            logger.debug("Executing response stream")
+            async for event_text in process_event_stream(url, request_data, tool_call):
+                full_response_text += event_text
+                yield event_text
 
-            self.conversation.add_message(role="assistant", content=full_followup_response)
-        elif tool_call and not self._approval_handler:
-            logger.warning(
-                f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
-                f"Register one with @client.approval_handler"
-            )
-        # Update the final state after everything is done
-        self.conversation.state.update(new_state)
+            tool_calls = []
+
+            if tool_call:
+                for key, value in tool_call.items():
+                    tool_calls.append({
+                        "id": key,
+                        "type": "function",
+                        "function": {
+                            "name": value['name'],
+                            "arguments": value['args']
+                        }
+                    })
+
+            if tool_calls:
+                self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
+            else:
+                self.conversation.add_message(role="assistant", content=full_response_text)
+
+            # Update state between requests just in case the LLM decided to change something before the tools get executed
+            self.conversation.state.update(new_state)
+
+            if tool_call and self._approval_handler:
+                import json
+
+                logger.debug(f"Received tool calls: {tool_call.items()}")
+                for key, value in tool_call.items():
+                    result = None
+                    try:
+                        args = json.loads(value['args'])
+
+                        if value['name'] == self._approval_handler.__name__:
+                            logger.info("Executing requested tool calls")
+                            if self._approval_is_async:
+                                result = await self._approval_handler(**args)
+                            else:
+                                result = self._approval_handler(**args)
+
+                    except json.JSONDecodeError as error:
+                        logger.error(f"Failed to decode JSON when decoding tool handler arguments: {error}")
+                        result = json.dumps({"error": str(error)})
+                    except Exception as error:
+                        logger.error(f"An error occurred when decoding tool handler arguments: {error}")
+                        result = json.dumps({"error": str(error)})
+
+                    if result is not None:
+                        # The content for the message must always be a string
+                        self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
+            elif tool_call and not self._approval_handler:
+                logger.warning(
+                    f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
+                    f"Register one with @client.approval_handler"
+                )
+            else:
+                # Update the final state after everything is done
+                self.conversation.state.update(new_state)
+                execution_complete = True
