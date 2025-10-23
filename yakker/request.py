@@ -1,20 +1,27 @@
 """Build AG-UI protocol compliant request"""
+import logging
 import uuid
 from typing import Any
 
 import httpx
 
+from .tool import validate_tools
 from .message import Message
+
+logger = logging.getLogger(__name__)
 
 def build_request(
         messages: list[Message],
         thread_id: str = None,
         state: dict[str, Any] = None,
-        tools: list[dict] = None,
-        tool_results: list[dict] = None
+        tools: list[dict] = None
 ) -> dict:
     """
     Build an AG-UI request from messages
+
+    Raises:
+        ValueError: If messages is empty or tools are malformed
+        TypeError: If parameters have wrong types
     :param tools: Additional capabilities to pass to the agent by way of functions
     :param messages: List of message objects
     :param thread_id: Optional thread ID for conversation correlation (will autogenerate if omitted)
@@ -22,13 +29,29 @@ def build_request(
     :return: Dictionary ready to send to an AG-UI server
     """
 
+    if not messages:
+        raise ValueError("Messages list cannot be empty")
+    if not isinstance(messages, list):
+        raise TypeError(f"Messages must be of type list, got {type(messages).__name__}")
+    if not all(isinstance(message, Message) for message in messages):
+        invalid = [type(message).__name__ for message in messages if not isinstance(message, Message)]
+        raise TypeError(f"All messages must be message instances, got {set(invalid)}")
+
+    if tools:
+        validate_tools(tools)
+
+    if state is not None and not isinstance(state, dict):
+        raise TypeError(f"State must be a dictionary, got {type(state).__name__}")
+
+    if not any(message.role == 'user' for message in messages):
+        logger.warning("No user messages in the conversation - may produce unexpected results")
+
     return {
         "threadId": thread_id or str(uuid.uuid4()),
         "runId": str(uuid.uuid4()),
         "messages": [msg.to_dict() for msg in messages],
         "state": state or {},
         "tools": tools or [],
-        # "toolResults": tool_results or [],
         "context": [],
         "forwardedProps": {}
     }

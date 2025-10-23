@@ -1,4 +1,5 @@
 """Sends requests to AG-UI servers"""
+import asyncio
 import inspect
 import logging
 from typing import Literal, Callable, Optional, AsyncGenerator
@@ -81,7 +82,7 @@ class Client:
 
         logger.info(f"Sending message to {url}")
         # Can build other tools later
-        async with httpx.AsyncClient() as http_client:
+        async with httpx.AsyncClient(http2=True) as http_client:
             tools = []
             if self._approval_handler:
                 tool = build_tool(self._approval_handler)
@@ -120,14 +121,15 @@ class Client:
 
                 if tool_call:
                     for key, value in tool_call.items():
-                        tool_calls.append({
-                            "id": key,
-                            "type": "function",
-                            "function": {
-                                "name": value['name'],
-                                "arguments": value['args']
-                            }
-                        })
+                        if self._approval_handler and value['name'] == self._approval_handler.__name__:
+                            tool_calls.append({
+                                "id": key,
+                                "type": "function",
+                                "function": {
+                                    "name": value['name'],
+                                    "arguments": value['args']
+                                }
+                            })
 
                 if tool_calls:
                     self.conversation.add_message(role="assistant", content=full_response_text, tool_calls=tool_calls)
@@ -160,6 +162,7 @@ class Client:
                         if result is not None:
                             # The content for the message must always be a string
                             self.conversation.add_message(role="tool", content=str(result), tool_call_id=key)
+
                 elif tool_call and not self._approval_handler:
                     logger.warning(
                         f"Tool call received ('{list(tool_call.keys())}') but no approval handler is registered. "
